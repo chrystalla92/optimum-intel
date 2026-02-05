@@ -12,9 +12,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import os
+import tempfile
 import time
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
@@ -56,7 +58,7 @@ MODEL_NAMES = {
     "camembert": "optimum-intel-internal-testing/tiny-random-camembert",
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
-    "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
+    "cohere": None,  # Will be set dynamically to the tiny Command-R model
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
@@ -224,6 +226,85 @@ MODEL_NAMES = {
     "ltx-video": "optimum-intel-internal-testing/tiny-random-ltx-video",
     "zamba2": "optimum-intel-internal-testing/tiny-random-zamba2",
 }
+
+
+def create_tiny_cohere_command_r_model():
+    """
+    Create a tiny version of the Cohere Command-R model for testing.
+    Based on the architecture of estrogen/c4ai-command-r7b-12-2024.
+    """
+    from transformers import AutoTokenizer, CohereConfig, CohereForCausalLM
+    
+    # Create a minimal Cohere configuration based on Command-R architecture
+    config = CohereConfig(
+        vocab_size=256128,  # Cohere's vocab size
+        hidden_size=128,  # Tiny hidden size for fast testing
+        intermediate_size=512,  # Reduced intermediate size
+        num_hidden_layers=2,  # Minimal layers for testing
+        num_attention_heads=4,  # Minimal attention heads
+        num_key_value_heads=2,  # Grouped query attention
+        max_position_embeddings=512,  # Reduced context length
+        rope_theta=10000.0,
+        attention_dropout=0.0,
+        use_cache=True,
+        pad_token_id=0,
+        bos_token_id=5,
+        eos_token_id=255001,
+    )
+    
+    # Initialize model with random weights
+    model = CohereForCausalLM(config)
+    
+    # Create a temporary directory for the model
+    temp_dir = tempfile.mkdtemp(prefix="tiny_cohere_command_r_")
+    
+    # Save the model
+    model.save_pretrained(temp_dir)
+    
+    # Create and save a tokenizer (using a base tokenizer for compatibility)
+    try:
+        # Try to use the real Cohere tokenizer if available
+        tokenizer = AutoTokenizer.from_pretrained("CohereForAI/c4ai-command-r-v01", trust_remote_code=True)
+    except Exception:
+        # Fall back to a compatible tokenizer
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            tokenizer.pad_token = tokenizer.eos_token
+        except Exception:
+            # If all else fails, create a basic tokenizer config
+            from transformers import PreTrainedTokenizerFast
+            from tokenizers import Tokenizer, models, pre_tokenizers
+            
+            # Create a simple BPE tokenizer
+            tokenizer_model = models.BPE()
+            tokenizer_obj = Tokenizer(tokenizer_model)
+            tokenizer_obj.pre_tokenizer = pre_tokenizers.Whitespace()
+            tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_obj)
+            tokenizer.pad_token = "<pad>"
+            tokenizer.eos_token = "</s>"
+            tokenizer.bos_token = "<s>"
+    
+    tokenizer.save_pretrained(temp_dir)
+    
+    return temp_dir
+
+
+# Create the tiny Cohere Command-R model at module load time
+# This will be set dynamically when the model is first requested
+_TINY_COHERE_MODEL_PATH = None
+
+
+def get_tiny_cohere_model_path():
+    """Get or create the tiny Cohere Command-R model path."""
+    global _TINY_COHERE_MODEL_PATH
+    if _TINY_COHERE_MODEL_PATH is None:
+        _TINY_COHERE_MODEL_PATH = create_tiny_cohere_command_r_model()
+        MODEL_NAMES["cohere"] = _TINY_COHERE_MODEL_PATH
+    return _TINY_COHERE_MODEL_PATH
+
+
+# Initialize the cohere model path immediately
+get_tiny_cohere_model_path()
 
 
 _ARCHITECTURES_TO_EXPECTED_INT8 = {
