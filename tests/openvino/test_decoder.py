@@ -132,6 +132,9 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     if is_transformers_version(">=", "4.52.1"):
         SUPPORTED_ARCHITECTURES += ("bitnet",)
 
+    if is_transformers_version(">=", "4.48.0"):
+        SUPPORTED_ARCHITECTURES += ("cohere2",)
+
     if is_transformers_version(">=", "4.54.0"):
         SUPPORTED_ARCHITECTURES += ("exaone4",)
 
@@ -199,6 +202,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         "starcoder2": 2,
         "dbrx": 2,
         "cohere": 2,
+        "cohere2": 1,
         "qwen2": 2,
         "qwen2_moe": 4,
         "arctic": 4,

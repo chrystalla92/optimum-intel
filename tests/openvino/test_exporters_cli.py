@@ -123,6 +123,13 @@ class OVCLIExportTestCase(unittest.TestCase):
             ]
         )
 
+    if is_transformers_version(">=", "4.48.0"):
+        SUPPORTED_ARCHITECTURES.extend(
+            [
+                ("text-generation-with-past", "cohere2"),
+            ]
+        )
+
     if is_transformers_version(">=", "4.49"):
         SUPPORTED_ARCHITECTURES.extend(
             [
@@ -174,6 +181,7 @@ class OVCLIExportTestCase(unittest.TestCase):
         "sam": 0,  # no tokenizer
         "speecht5": 2,
         "clip": 2,
+        "cohere2": 2,
         "mamba": 2,
         "falcon_mamba": 2,
         "qwen3": 2,
