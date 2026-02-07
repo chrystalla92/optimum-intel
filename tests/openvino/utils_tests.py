@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import os
+import tempfile
 import time
 import unittest
 from contextlib import contextmanager
@@ -23,6 +24,93 @@ import torch
 
 from optimum.exporters.tasks import TasksManager
 from optimum.intel.utils.import_utils import is_transformers_version
+
+
+# Global variable to store the path to the tiny cohere2 model
+_TINY_COHERE2_MODEL_PATH = None
+
+
+def _create_tiny_cohere2_model():
+    """Create a tiny random Cohere2 model for testing purposes."""
+    global _TINY_COHERE2_MODEL_PATH
+    
+    if _TINY_COHERE2_MODEL_PATH is not None and os.path.exists(_TINY_COHERE2_MODEL_PATH):
+        return _TINY_COHERE2_MODEL_PATH
+    
+    # Only create the model if transformers version supports Cohere2
+    if not is_transformers_version(">=", "4.48.0"):
+        return "estrogen/c4ai-command-r7b-12-2024"  # Fallback
+    
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+        
+        # Create a minimal Cohere2 config
+        config_dict = {
+            "model_type": "cohere2",
+            "architectures": ["Cohere2ForCausalLM"],
+            "vocab_size": 256,
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 16,
+            "max_position_embeddings": 128,
+            "sliding_window": 64,
+            "attention_dropout": 0.0,
+            "hidden_act": "silu",
+            "initializer_range": 0.02,
+            "layer_norm_eps": 1e-5,
+            "use_cache": True,
+            "bos_token_id": 1,
+            "eos_token_id": 2,
+            "pad_token_id": 0,
+            "tie_word_embeddings": False,
+            "rope_theta": 10000.0,
+            "rope_scaling": None,
+            "attention_bias": False,
+            "torch_dtype": "float32",
+        }
+        
+        config = AutoConfig.for_model("cohere2", **config_dict)
+        
+        # Create model from config
+        model = AutoModelForCausalLM.from_config(config)
+        
+        # Create a temporary directory to save the model
+        temp_dir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+        _TINY_COHERE2_MODEL_PATH = temp_dir
+        
+        # Save the model and config
+        model.save_pretrained(temp_dir)
+        config.save_pretrained(temp_dir)
+        
+        # Create a minimal tokenizer
+        try:
+            # Use GPT2 tokenizer as a base - it's a simple BPE tokenizer that should work
+            from transformers import GPT2TokenizerFast
+            
+            tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+            tokenizer.pad_token = tokenizer.eos_token
+            # Ensure we have all the special tokens set
+            if tokenizer.bos_token is None:
+                tokenizer.bos_token = tokenizer.eos_token
+            tokenizer.save_pretrained(temp_dir)
+        except Exception as e:
+            # If tokenizer creation fails, it's not critical - the model can still be exported
+            # Some tests only need the model structure, not the tokenizer
+            print(f"Warning: Could not create tokenizer for tiny Cohere2 model: {e}")
+        
+        return temp_dir
+    except Exception as e:
+        # If anything fails, fall back to the original model
+        print(f"Warning: Could not create tiny Cohere2 model: {e}")
+        return "estrogen/c4ai-command-r7b-12-2024"
+
+
+def _get_cohere2_model_name():
+    """Get the Cohere2 model name, using dynamically created tiny model."""
+    return _create_tiny_cohere2_model()
 
 
 SEED = 42
@@ -57,7 +145,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": _get_cohere2_model_name(),
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
