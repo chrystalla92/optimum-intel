@@ -104,9 +104,6 @@ class ExportModelTest(unittest.TestCase):
     if is_transformers_version(">=", "4.53.0"):
         SUPPORTED_ARCHITECTURES.update({"granitemoehybrid": OVModelForCausalLM})
 
-    if is_transformers_version(">=", "4.48"):
-        SUPPORTED_ARCHITECTURES.update({"cohere2": OVModelForCausalLM})
-
     if is_transformers_version(">=", "4.54"):
         SUPPORTED_ARCHITECTURES.update({"exaone4": OVModelForCausalLM, "lfm2": OVModelForCausalLM})
 
@@ -140,7 +137,7 @@ class ExportModelTest(unittest.TestCase):
         tmpdir = tempfile.mkdtemp(prefix="tiny_cohere2_")
 
         # Create tiny cohere2 config
-        config = AutoConfig.from_pretrained("CohereForAI/c4ai-command-r7b-12-2024")
+        config = AutoConfig.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
         config.hidden_size = 64
         config.intermediate_size = 256
         config.num_hidden_layers = 2
@@ -157,7 +154,7 @@ class ExportModelTest(unittest.TestCase):
         model.save_pretrained(tmpdir)
 
         # Copy tokenizer
-        tokenizer = AutoTokenizer.from_pretrained("CohereForAI/c4ai-command-r7b-12-2024")
+        tokenizer = AutoTokenizer.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
         tokenizer.save_pretrained(tmpdir)
 
         cls._tiny_model_cache["cohere2"] = tmpdir
