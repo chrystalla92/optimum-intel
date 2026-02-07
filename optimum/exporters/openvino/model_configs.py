@@ -1068,6 +1068,18 @@ class CohereOpenVINOConfig(LlamaOpenVINOConfig):
     pass
 
 
+@register_in_tasks_manager(
+    "cohere2",
+    *[
+        "text-generation",
+        "text-generation-with-past",
+    ],
+    library_name="transformers",
+)
+class Cohere2OpenVINOConfig(LlamaOpenVINOConfig):
+    MIN_TRANSFORMERS_VERSION = "4.48.0"
+
+
 @register_in_tasks_manager("xglm", *["text-generation", "text-generation-with-past"], library_name="transformers")
 class XGLMConfig(TextDecoderWithPositionIdsOnnxConfig):
     DEFAULT_ONNX_OPSET = 13
