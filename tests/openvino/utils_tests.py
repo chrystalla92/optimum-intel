@@ -354,7 +354,7 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
         "resampler_model": 6,
     },
     "zamba2": {"model": 44},
-    "cohere2": {"model": 16},
+    "cohere2": {"model": 450},  # Tiny model (2 layers)
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
 }
