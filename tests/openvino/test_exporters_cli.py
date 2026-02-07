@@ -20,6 +20,7 @@ from unittest.mock import Mock
 
 from parameterized import parameterized
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoModelForTextToSpectrogram,
     AutoModelForZeroShotImageClassification,
@@ -261,6 +262,49 @@ class OVCLIExportTestCase(unittest.TestCase):
                 },
             }
         )
+
+    # Cache for dynamically created tiny models
+    _tiny_model_cache = {}
+
+    @classmethod
+    def _create_tiny_cohere2(cls):
+        """Create a tiny cohere2 model for testing."""
+        if "cohere2" in cls._tiny_model_cache:
+            return cls._tiny_model_cache["cohere2"]
+
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+
+        # Create tiny cohere2 config
+        config = AutoConfig.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
+        config.hidden_size = 64
+        config.intermediate_size = 256
+        config.num_hidden_layers = 2
+        config.num_attention_heads = 8
+        config.num_key_value_heads = 4
+        config.sliding_window = 64
+
+        # Adjust layer_types to match num_hidden_layers
+        if hasattr(config, "layer_types") and config.layer_types:
+            config.layer_types = config.layer_types[:2]
+
+        # Create and save tiny model
+        model = AutoModelForCausalLM.from_config(config)
+        model.save_pretrained(tmpdir)
+
+        # Copy tokenizer
+        tokenizer = AutoTokenizer.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
+        tokenizer.save_pretrained(tmpdir)
+
+        cls._tiny_model_cache["cohere2"] = tmpdir
+        return tmpdir
+
+    def _get_model_name(self, model_type):
+        """Get model name, using tiny model for cohere2."""
+        if model_type == "cohere2":
+            return self._create_tiny_cohere2()
+        return MODEL_NAMES[model_type]
 
     SUPPORTED_SD_HYBRID_ARCHITECTURES = [
         ("flux", 7, 56),
@@ -814,7 +858,7 @@ class OVCLIExportTestCase(unittest.TestCase):
         model_kwargs = None
         if task == "text-to-audio" and model_type == "speecht5":
             model_kwargs = {"vocoder": "fxmarty/speecht5-hifigan-tiny"}
-        self._openvino_export(MODEL_NAMES[model_type], task, model_kwargs)
+        self._openvino_export(self._get_model_name(model_type), task, model_kwargs)
 
     @parameterized.expand(SUPPORTED_ARCHITECTURES)
     def test_exporters_cli(self, task: str, model_type: str):
@@ -823,7 +867,7 @@ class OVCLIExportTestCase(unittest.TestCase):
             if task == "text-to-audio" and model_type == "speecht5":
                 add_ops = '--model-kwargs "{\\"vocoder\\": \\"fxmarty/speecht5-hifigan-tiny\\"}"'
             subprocess.run(
-                f"optimum-cli export openvino --model {MODEL_NAMES[model_type]} --task {task} {add_ops} {tmpdir}",
+                f"optimum-cli export openvino --model {self._get_model_name(model_type)} --task {task} {add_ops} {tmpdir}",
                 shell=True,
                 check=True,
             )
@@ -845,7 +889,7 @@ class OVCLIExportTestCase(unittest.TestCase):
             if task == "text-to-audio" and model_type == "speecht5":
                 add_ops = '--model-kwargs "{\\"vocoder\\": \\"fxmarty/speecht5-hifigan-tiny\\"}"'
             output = subprocess.check_output(
-                f"TRANSFORMERS_VERBOSITY=debug optimum-cli export openvino --model {MODEL_NAMES[model_type]} --task {task} {add_ops} {tmpdir}",
+                f"TRANSFORMERS_VERBOSITY=debug optimum-cli export openvino --model {self._get_model_name(model_type)} --task {task} {add_ops} {tmpdir}",
                 shell=True,
                 stderr=subprocess.STDOUT,
             ).decode()

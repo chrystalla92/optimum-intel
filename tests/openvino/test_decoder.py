@@ -7,7 +7,7 @@ import unittest
 import pytest
 import torch
 from parameterized import parameterized
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig, pipeline, set_seed
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig, pipeline, set_seed
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.testing_utils import slow
 from utils_tests import (
@@ -234,6 +234,49 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     }
     TASK = "text-generation"
 
+    # Cache for dynamically created tiny models
+    _tiny_model_cache = {}
+
+    @classmethod
+    def _create_tiny_cohere2(cls):
+        """Create a tiny cohere2 model for testing."""
+        if "cohere2" in cls._tiny_model_cache:
+            return cls._tiny_model_cache["cohere2"]
+
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+
+        # Create tiny cohere2 config
+        config = AutoConfig.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
+        config.hidden_size = 64
+        config.intermediate_size = 256
+        config.num_hidden_layers = 2
+        config.num_attention_heads = 8
+        config.num_key_value_heads = 4
+        config.sliding_window = 64
+
+        # Adjust layer_types to match num_hidden_layers
+        if hasattr(config, "layer_types") and config.layer_types:
+            config.layer_types = config.layer_types[:2]
+
+        # Create and save tiny model
+        model = AutoModelForCausalLM.from_config(config)
+        model.save_pretrained(tmpdir)
+
+        # Copy tokenizer
+        tokenizer = AutoTokenizer.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
+        tokenizer.save_pretrained(tmpdir)
+
+        cls._tiny_model_cache["cohere2"] = tmpdir
+        return tmpdir
+
+    def _get_model_name(self, model_arch):
+        """Get model name, using tiny model for cohere2."""
+        if model_arch == "cohere2":
+            return self._create_tiny_cohere2()
+        return MODEL_NAMES[model_arch]
+
     def mock_torch_compile(self, model_arch):
         if model_arch == "bitnet":
             # mock torch.compile to avoid compilation errors in tests
@@ -243,7 +286,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
             self.addCleanup(lambda: setattr(torch, "compile", original_torch_compile))
 
     def get_tokenizer(self, model_arch: str):
-        model_id = MODEL_NAMES[model_arch]
+        model_id = self._get_model_name(model_arch)
         trust_remote_code = model_arch in REMOTE_CODE_MODELS
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
         if tokenizer.pad_token is None:
@@ -298,7 +341,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     @parameterized.expand(SUPPORTED_ARCHITECTURES)
     def test_compare_to_transformers(self, model_arch):
         self.mock_torch_compile(model_arch)
-        model_id = MODEL_NAMES[model_arch]
+        model_id = self._get_model_name(model_arch)
 
         not_stateful = []
         set_seed(SEED)
@@ -445,7 +488,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         self.mock_torch_compile(model_arch)
         set_seed(SEED)
         model_kwargs = {}
-        model_id = MODEL_NAMES[model_arch]
+        model_id = self._get_model_name(model_arch)
         if model_arch in REMOTE_CODE_MODELS:
             model_kwargs = {"trust_remote_code": True}
         tokenizer = self.get_tokenizer(model_arch)
@@ -630,7 +673,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     def test_beam_search(self, model_arch):
         self.mock_torch_compile(model_arch)
         model_kwargs = {}
-        model_id = MODEL_NAMES[model_arch]
+        model_id = self._get_model_name(model_arch)
         if model_arch in REMOTE_CODE_MODELS:
             model_kwargs = {"trust_remote_code": True}
 
