@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 from parameterized import parameterized
 from sentence_transformers import SentenceTransformer, models
-from transformers import AutoConfig, AutoTokenizer, GenerationConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from utils_tests import (
     MODEL_NAMES,
     OPENVINO_DEVICE,
@@ -104,6 +104,9 @@ class ExportModelTest(unittest.TestCase):
     if is_transformers_version(">=", "4.53.0"):
         SUPPORTED_ARCHITECTURES.update({"granitemoehybrid": OVModelForCausalLM})
 
+    if is_transformers_version(">=", "4.48"):
+        SUPPORTED_ARCHITECTURES.update({"cohere2": OVModelForCausalLM})
+
     if is_transformers_version(">=", "4.54"):
         SUPPORTED_ARCHITECTURES.update({"exaone4": OVModelForCausalLM, "lfm2": OVModelForCausalLM})
 
@@ -123,6 +126,43 @@ class ExportModelTest(unittest.TestCase):
 
     GENERATIVE_MODELS = ("pix2struct", "t5", "bart", "gpt2", "whisper", "llava", "speecht5")
 
+    # Cache for dynamically created tiny models
+    _tiny_model_cache = {}
+
+    @classmethod
+    def _create_tiny_cohere2(cls):
+        """Create a tiny cohere2 model for testing."""
+        if "cohere2" in cls._tiny_model_cache:
+            return cls._tiny_model_cache["cohere2"]
+
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+
+        # Create tiny cohere2 config
+        config = AutoConfig.from_pretrained("CohereForAI/c4ai-command-r7b-12-2024")
+        config.hidden_size = 64
+        config.intermediate_size = 256
+        config.num_hidden_layers = 2
+        config.num_attention_heads = 8
+        config.num_key_value_heads = 4
+        config.sliding_window = 64
+
+        # Adjust layer_types to match num_hidden_layers
+        if hasattr(config, "layer_types") and config.layer_types:
+            config.layer_types = config.layer_types[:2]
+
+        # Create and save tiny model
+        model = AutoModelForCausalLM.from_config(config)
+        model.save_pretrained(tmpdir)
+
+        # Copy tokenizer
+        tokenizer = AutoTokenizer.from_pretrained("CohereForAI/c4ai-command-r7b-12-2024")
+        tokenizer.save_pretrained(tmpdir)
+
+        cls._tiny_model_cache["cohere2"] = tmpdir
+        return tmpdir
+
     def _openvino_export(
         self,
         model_type: str,
@@ -132,7 +172,13 @@ class ExportModelTest(unittest.TestCase):
     ):
         auto_model = self.SUPPORTED_ARCHITECTURES[model_type]
         task = auto_model.export_feature
-        model_name = MODEL_NAMES[model_type]
+
+        # Use dynamically created tiny model for cohere2
+        if model_type == "cohere2":
+            model_name = self._create_tiny_cohere2()
+        else:
+            model_name = MODEL_NAMES[model_type]
+
         library_name = TasksManager.infer_library_from_model(model_name)
         loading_kwargs = {"attn_implementation": "eager"} if model_type in SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED else {}
 
