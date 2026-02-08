@@ -33,6 +33,58 @@ TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
 
 OPENVINO_DEVICE = os.getenv("OPENVINO_TEST_DEVICE", "CPU")
 
+
+def _create_tiny_cohere2_model():
+    """Create a tiny cohere2 model dynamically for testing."""
+    import tempfile
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+    
+    # Only create if transformers version supports cohere2
+    if not is_transformers_version(">=", "4.48.0"):
+        return "estrogen/c4ai-command-r7b-12-2024"  # Fallback to original
+    
+    try:
+        # Create a temporary directory for the model that persists for the test session
+        model_path = os.path.join(tempfile.gettempdir(), "tiny-cohere2-test-model")
+        
+        # If model already exists, return the path
+        if os.path.exists(model_path) and os.path.exists(os.path.join(model_path, "config.json")):
+            return model_path
+        
+        # Load the config from the base model
+        config = AutoConfig.from_pretrained("estrogen/c4ai-command-r7b-12-2024", trust_remote_code=False)
+        
+        # Make the config tiny as specified
+        config.hidden_size = 64
+        config.intermediate_size = 256
+        config.num_hidden_layers = 2
+        config.num_attention_heads = 8
+        config.num_key_value_heads = 4
+        config.sliding_window = 64
+        
+        # Create model from the tiny config
+        model = AutoModelForCausalLM.from_config(config)
+        
+        # Create directory if it doesn't exist
+        os.makedirs(model_path, exist_ok=True)
+        
+        # Save the model and config
+        model.save_pretrained(model_path)
+        
+        # Also save the tokenizer
+        tokenizer = AutoTokenizer.from_pretrained("estrogen/c4ai-command-r7b-12-2024", trust_remote_code=False)
+        tokenizer.save_pretrained(model_path)
+        
+        return model_path
+    except Exception as e:
+        # If anything fails, fall back to the original model
+        print(f"Warning: Failed to create tiny cohere2 model: {e}. Using original model.")
+        return "estrogen/c4ai-command-r7b-12-2024"
+
+
+# Create the tiny cohere2 model at module import time
+_TINY_COHERE2_MODEL_PATH = _create_tiny_cohere2_model()
+
 MODEL_NAMES = {
     "afmoe": "optimum-intel-internal-testing/tiny-random-trinity",
     "albert": "optimum-intel-internal-testing/tiny-random-albert",
@@ -57,7 +109,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": _TINY_COHERE2_MODEL_PATH,
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
