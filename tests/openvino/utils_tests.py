@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import os
+import tempfile
 import time
 import unittest
 from contextlib import contextmanager
@@ -25,6 +26,64 @@ from optimum.exporters.tasks import TasksManager
 from optimum.intel.utils.import_utils import is_transformers_version
 
 
+# Global variable to store the path to the tiny cohere2 model
+_TINY_COHERE2_MODEL_PATH = None
+
+
+def get_or_create_tiny_cohere2_model():
+    """
+    Create a tiny cohere2 model dynamically with only 2 hidden layers.
+    The model is created once and cached for reuse across tests.
+    """
+    global _TINY_COHERE2_MODEL_PATH
+    
+    if _TINY_COHERE2_MODEL_PATH is not None and os.path.exists(_TINY_COHERE2_MODEL_PATH):
+        return _TINY_COHERE2_MODEL_PATH
+    
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+    
+    # Load config from the original model
+    original_model_id = "estrogen/c4ai-command-r7b-12-2024"
+    config = AutoConfig.from_pretrained(original_model_id)
+    
+    # Modify config to make it tiny with only 2 layers
+    config.num_hidden_layers = 2
+    
+    # Keep only the first two layer types if layer_types exists
+    if hasattr(config, 'layer_types') and config.layer_types is not None:
+        # Get unique layer types and keep only first two
+        unique_types = []
+        for layer_type in config.layer_types:
+            if layer_type not in unique_types:
+                unique_types.append(layer_type)
+            if len(unique_types) == 2:
+                break
+        # Create layer_types list with only 2 layers using the first two types
+        config.layer_types = unique_types[:2]
+    
+    # Reduce other dimensions to make model smaller
+    config.hidden_size = 64
+    config.intermediate_size = 128
+    config.num_attention_heads = 2
+    config.num_key_value_heads = 2
+    
+    # Create a temporary directory for the model
+    tmpdir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+    
+    # Create model from config
+    model = AutoModelForCausalLM.from_config(config)
+    
+    # Load and save tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(original_model_id)
+    
+    # Save model and tokenizer
+    model.save_pretrained(tmpdir)
+    tokenizer.save_pretrained(tmpdir)
+    
+    _TINY_COHERE2_MODEL_PATH = tmpdir
+    return tmpdir
+
+
 SEED = 42
 
 F32_CONFIG = {"INFERENCE_PRECISION_HINT": "f32"}
@@ -33,7 +92,16 @@ TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
 
 OPENVINO_DEVICE = os.getenv("OPENVINO_TEST_DEVICE", "CPU")
 
-MODEL_NAMES = {
+# Helper class to defer model creation until accessed
+class _ModelNamesDict(dict):
+    def __getitem__(self, key):
+        if key == "cohere2":
+            # Create the model dynamically when accessed
+            return get_or_create_tiny_cohere2_model()
+        return super().__getitem__(key)
+
+
+MODEL_NAMES = _ModelNamesDict({
     "afmoe": "optimum-intel-internal-testing/tiny-random-trinity",
     "albert": "optimum-intel-internal-testing/tiny-random-albert",
     "aquila": "optimum-intel-internal-testing/tiny-random-aquilachat",
@@ -57,7 +125,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": None,  # Placeholder, will be created dynamically
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
@@ -224,7 +292,7 @@ MODEL_NAMES = {
     "sana-sprint": "optimum-intel-internal-testing/tiny-random-sana-sprint",
     "ltx-video": "optimum-intel-internal-testing/tiny-random-ltx-video",
     "zamba2": "optimum-intel-internal-testing/tiny-random-zamba2",
-}
+})
 
 
 _ARCHITECTURES_TO_EXPECTED_INT8 = {
@@ -354,7 +422,7 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
         "resampler_model": 6,
     },
     "zamba2": {"model": 44},
-    "cohere2": {"model": 16},
+    "cohere2": {"model": 8},
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
 }
