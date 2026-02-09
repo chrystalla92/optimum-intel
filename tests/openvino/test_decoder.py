@@ -202,7 +202,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         "starcoder2": 2,
         "dbrx": 2,
         "cohere": 2,
-        "cohere2": 1,
+        "cohere2": 2,
         "qwen2": 2,
         "qwen2_moe": 4,
         "arctic": 4,

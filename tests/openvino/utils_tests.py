@@ -27,6 +27,74 @@ from optimum.intel.utils.import_utils import is_transformers_version
 
 SEED = 42
 
+
+def _get_tiny_cohere2_model_path():
+    """
+    Create a tiny cohere2 model dynamically based on the config from
+    'estrogen/c4ai-command-r7b-12-2024' with only 2 hidden layers.
+    """
+    import tempfile
+    from pathlib import Path
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+    # Get the original config
+    original_model_id = "estrogen/c4ai-command-r7b-12-2024"
+    config = AutoConfig.from_pretrained(original_model_id)
+    
+    # Make it tiny with only 2 hidden layers
+    config.num_hidden_layers = 2
+    
+    # Keep only the first two types of layer types if layer_types exists
+    if hasattr(config, 'layer_types') and config.layer_types is not None:
+        # Get unique layer types while preserving order
+        unique_types = []
+        for lt in config.layer_types:
+            if lt not in unique_types:
+                unique_types.append(lt)
+        
+        # Keep only first two unique types
+        types_to_keep = unique_types[:2]
+        
+        # Create new layer_types list with only 2 layers using first two types
+        config.layer_types = [types_to_keep[i % len(types_to_keep)] for i in range(2)]
+    
+    # Reduce other dimensions to make it truly tiny
+    config.hidden_size = 256
+    config.intermediate_size = 512
+    config.num_attention_heads = 4
+    config.num_key_value_heads = 2
+    
+    # Create cache directory
+    cache_dir = Path(tempfile.gettempdir()) / "tiny_cohere2_model"
+    
+    # Only create the model if it doesn't exist
+    if not cache_dir.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create a tiny random model with this config
+        model = AutoModelForCausalLM.from_config(config)
+        
+        # Get tokenizer from original model
+        tokenizer = AutoTokenizer.from_pretrained(original_model_id)
+        
+        # Save the model and tokenizer
+        model.save_pretrained(cache_dir)
+        tokenizer.save_pretrained(cache_dir)
+    
+    return str(cache_dir)
+
+
+# Initialize the tiny cohere2 model path
+_TINY_COHERE2_MODEL_PATH = None
+
+
+def get_tiny_cohere2_model():
+    """Get or create the tiny cohere2 model path."""
+    global _TINY_COHERE2_MODEL_PATH
+    if _TINY_COHERE2_MODEL_PATH is None:
+        _TINY_COHERE2_MODEL_PATH = _get_tiny_cohere2_model_path()
+    return _TINY_COHERE2_MODEL_PATH
+
 F32_CONFIG = {"INFERENCE_PRECISION_HINT": "f32"}
 
 TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
@@ -57,7 +125,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": None,  # Will be set dynamically below
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
@@ -226,6 +294,9 @@ MODEL_NAMES = {
     "zamba2": "optimum-intel-internal-testing/tiny-random-zamba2",
 }
 
+# Initialize tiny cohere2 model dynamically
+MODEL_NAMES["cohere2"] = get_tiny_cohere2_model()
+
 
 _ARCHITECTURES_TO_EXPECTED_INT8 = {
     "afmoe": {"model": 16},
@@ -354,7 +425,7 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
         "resampler_model": 6,
     },
     "zamba2": {"model": 44},
-    "cohere2": {"model": 16},
+    "cohere2": {"model": 8},  # Reduced from 16 due to only 2 layers
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
 }
