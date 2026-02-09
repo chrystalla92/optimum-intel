@@ -25,6 +25,78 @@ from optimum.exporters.tasks import TasksManager
 from optimum.intel.utils.import_utils import is_transformers_version
 
 
+def _create_tiny_cohere2_model():
+    """
+    Create a tiny Cohere2 model dynamically for testing purposes.
+    This function is called once at module import time.
+    """
+    import atexit
+    import shutil
+    import tempfile
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+    try:
+        # Create tiny model config for Cohere2
+        # Use the model type string to create the config
+        config = AutoConfig.for_model("cohere2")
+        
+        # Set tiny model parameters as specified
+        config.hidden_size = 64
+        config.intermediate_size = 256
+        config.num_hidden_layers = 2
+        config.num_attention_heads = 8
+        config.num_key_value_heads = 4
+        config.sliding_window = 64
+        
+        # Keep only the first two types of layer types
+        # Command R7B typically uses ["dense", "sliding", ...] pattern
+        # For a 2-layer model, we keep just the first two unique types
+        config.layer_types = ["dense", "sliding"]
+        
+        # Reduce vocab size for faster testing
+        config.vocab_size = 1000
+        
+        # Set other necessary config parameters for Cohere2
+        if not hasattr(config, "max_position_embeddings"):
+            config.max_position_embeddings = 2048
+        if not hasattr(config, "head_dim"):
+            config.head_dim = config.hidden_size // config.num_attention_heads
+        
+        # Create temporary directory
+        temp_dir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+        
+        # Initialize and save model
+        model = AutoModelForCausalLM.from_config(config)
+        model.save_pretrained(temp_dir)
+        config.save_pretrained(temp_dir)
+        
+        # Save tokenizer - use GPT2 tokenizer as fallback since Cohere tokenizer may not be available
+        from transformers import GPT2Tokenizer
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.save_pretrained(temp_dir)
+        
+        # Register cleanup
+        def cleanup():
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        atexit.register(cleanup)
+        
+        return temp_dir
+    except Exception as e:
+        # If creation fails, fall back to the original model
+        print(f"Warning: Failed to create tiny cohere2 model: {e}")
+        import traceback
+        traceback.print_exc()
+        return "estrogen/c4ai-command-r7b-12-2024"
+
+
+# Create tiny cohere2 model path at module import time
+_TINY_COHERE2_MODEL_PATH = _create_tiny_cohere2_model()
+
+
 SEED = 42
 
 F32_CONFIG = {"INFERENCE_PRECISION_HINT": "f32"}
@@ -57,7 +129,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": _TINY_COHERE2_MODEL_PATH,
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
