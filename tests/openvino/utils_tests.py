@@ -27,6 +27,62 @@ from optimum.intel.utils.import_utils import is_transformers_version
 
 SEED = 42
 
+
+def _create_tiny_cohere2_model():
+    """
+    Creates a tiny cohere2 model based on the config from
+    estrogen/c4ai-command-r7b-12-2024 with only 2 hidden layers.
+    Returns the path to the saved model.
+    """
+    import tempfile
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+    
+    # Use a persistent cache directory
+    cache_dir = os.path.join(tempfile.gettempdir(), "optimum_intel_test_models")
+    os.makedirs(cache_dir, exist_ok=True)
+    tiny_cohere2_path = os.path.join(cache_dir, "tiny-cohere2")
+    
+    # Check if model already exists
+    if os.path.exists(tiny_cohere2_path) and os.path.exists(os.path.join(tiny_cohere2_path, "config.json")):
+        return tiny_cohere2_path
+    
+    # Load the original config
+    original_model_id = "estrogen/c4ai-command-r7b-12-2024"
+    config = AutoConfig.from_pretrained(original_model_id, trust_remote_code=True)
+    
+    # Get the first two unique layer types from the original config
+    original_layer_types = config.layer_types if hasattr(config, 'layer_types') else None
+    if original_layer_types:
+        unique_types = []
+        for lt in original_layer_types:
+            if lt not in unique_types:
+                unique_types.append(lt)
+            if len(unique_types) == 2:
+                break
+        # Create layer_types with only 2 layers using the first two unique types
+        config.layer_types = unique_types[:2]
+    
+    # Make the model tiny
+    config.num_hidden_layers = 2
+    config.hidden_size = 64
+    config.intermediate_size = 128
+    config.num_attention_heads = 2
+    config.num_key_value_heads = 2
+    config.vocab_size = 1000
+    config.max_position_embeddings = 128
+    
+    # Create the model from the modified config
+    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    
+    # Save the model
+    model.save_pretrained(tiny_cohere2_path)
+    
+    # Load and save tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(original_model_id, trust_remote_code=True)
+    tokenizer.save_pretrained(tiny_cohere2_path)
+    
+    return tiny_cohere2_path
+
 F32_CONFIG = {"INFERENCE_PRECISION_HINT": "f32"}
 
 TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
@@ -57,7 +113,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": _create_tiny_cohere2_model(),
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
@@ -354,7 +410,7 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
         "resampler_model": 6,
     },
     "zamba2": {"model": 44},
-    "cohere2": {"model": 16},
+    "cohere2": {"model": 30},
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
 }
@@ -378,6 +434,7 @@ REMOTE_CODE_MODELS = (
     "codegen2",
     "arctic",
     "chatglm4",
+    "cohere2",
     "exaone",
     "exaone4",
     "decilm",
