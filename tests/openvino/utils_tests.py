@@ -33,6 +33,22 @@ TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
 
 OPENVINO_DEVICE = os.getenv("OPENVINO_TEST_DEVICE", "CPU")
 
+def _get_cohere2_model():
+    """Lazy loader for tiny cohere2 model."""
+    try:
+        # Import from the same directory
+        import sys
+        from pathlib import Path
+        current_dir = Path(__file__).parent
+        if str(current_dir) not in sys.path:
+            sys.path.insert(0, str(current_dir))
+        from conftest import get_tiny_cohere2_model_path
+        return get_tiny_cohere2_model_path()
+    except (ImportError, Exception):
+        # Fallback to original model if conftest is not available
+        return "estrogen/c4ai-command-r7b-12-2024"
+
+
 MODEL_NAMES = {
     "afmoe": "optimum-intel-internal-testing/tiny-random-trinity",
     "albert": "optimum-intel-internal-testing/tiny-random-albert",
@@ -57,7 +73,7 @@ MODEL_NAMES = {
     "clip": "optimum-intel-internal-testing/tiny-random-CLIPModel",
     "convbert": "optimum-intel-internal-testing/tiny-random-ConvBertForSequenceClassification",
     "cohere": "optimum-intel-internal-testing/tiny-random-CohereForCausalLM",
-    "cohere2": "estrogen/c4ai-command-r7b-12-2024",
+    "cohere2": _get_cohere2_model(),
     "chatglm": "optimum-intel-internal-testing/tiny-random-chatglm",
     "chatglm4": "optimum-intel-internal-testing/tiny-random-chatglm4",
     "codegen": "optimum-intel-internal-testing/tiny-random-CodeGenForCausalLM",
@@ -364,6 +380,7 @@ TEST_IMAGE_URL = "http://images.cocodataset.org/val2017/000000039769.jpg"
 REMOTE_CODE_MODELS = (
     "afmoe",
     "chatglm",
+    "cohere2",
     "minicpm",
     "baichuan2",
     "baichuan2-13b",
