@@ -354,7 +354,7 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
         "resampler_model": 6,
     },
     "zamba2": {"model": 44},
-    "cohere2": {"model": 16},
+    "cohere2": {"model": 30},
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
 }
@@ -552,3 +552,92 @@ class Timer(object):
 
     def __exit__(self, type, value, traceback):
         self.elapsed = (time.perf_counter() - self.elapsed) * 1e3
+
+
+def create_tiny_cohere2_model():
+    """
+    Create a tiny cohere2 model dynamically for testing.
+    Uses the config from "estrogen/c4ai-command-r7b-12-2024" as a base,
+    but makes it tiny with only 2 hidden layers and keeps only the first two layer types.
+    """
+    import tempfile
+    from pathlib import Path
+    
+    if not is_transformers_version(">=", "4.48.0"):
+        return None
+    
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+        
+        # Load the base config from the reference model
+        base_config = AutoConfig.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
+        
+        # Create a tiny version with only 2 layers
+        tiny_config = base_config.__class__(
+            vocab_size=base_config.vocab_size,
+            hidden_size=128,  # Make it tiny
+            intermediate_size=256,  # Make it tiny
+            num_hidden_layers=2,  # Only 2 layers as requested
+            num_attention_heads=4,  # Make it tiny
+            num_key_value_heads=2,  # Make it tiny
+            head_dim=32,  # Make it tiny
+            hidden_act=base_config.hidden_act,
+            max_position_embeddings=512,  # Make it smaller
+            rope_theta=base_config.rope_theta,
+            attention_bias=base_config.attention_bias,
+            attention_dropout=base_config.attention_dropout,
+            pad_token_id=base_config.pad_token_id,
+            bos_token_id=base_config.bos_token_id,
+            eos_token_id=base_config.eos_token_id,
+            tie_word_embeddings=base_config.tie_word_embeddings,
+            use_cache=True,
+        )
+        
+        # Copy layer_types if it exists, but only keep first two types
+        if hasattr(base_config, 'layer_types') and base_config.layer_types:
+            # Get unique layer types and keep only first two
+            unique_types = []
+            seen = set()
+            for layer_type in base_config.layer_types:
+                if layer_type not in seen:
+                    unique_types.append(layer_type)
+                    seen.add(layer_type)
+                if len(unique_types) == 2:
+                    break
+            
+            # Create pattern for 2 layers using only first two types
+            tiny_config.layer_types = [unique_types[i % len(unique_types)] for i in range(2)]
+        
+        # Copy other cohere2-specific attributes if they exist
+        for attr in ['sliding_window', 'logit_scale', 'rope_scaling']:
+            if hasattr(base_config, attr):
+                setattr(tiny_config, attr, getattr(base_config, attr))
+        
+        # Create the model with random weights
+        model = AutoModelForCausalLM.from_config(tiny_config)
+        
+        # Create a temporary directory and save the model
+        temp_dir = tempfile.mkdtemp(prefix="tiny_cohere2_")
+        model.save_pretrained(temp_dir)
+        
+        # Also save a tokenizer (copy from base model)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("estrogen/c4ai-command-r7b-12-2024")
+            tokenizer.save_pretrained(temp_dir)
+        except Exception:
+            # If tokenizer loading fails, we'll handle it in tests
+            pass
+        
+        return temp_dir
+        
+    except Exception as e:
+        print(f"Failed to create tiny cohere2 model: {e}")
+        return None
+
+
+# Create the tiny cohere2 model at module import time
+_TINY_COHERE2_PATH = None
+if is_transformers_version(">=", "4.48.0"):
+    _TINY_COHERE2_PATH = create_tiny_cohere2_model()
+    if _TINY_COHERE2_PATH:
+        MODEL_NAMES["cohere2"] = _TINY_COHERE2_PATH
