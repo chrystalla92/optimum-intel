@@ -43,6 +43,7 @@ if is_transformers_version(">=", "4.53"):
     from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeSparseMoeBlock
 if is_transformers_version(">=", "4.56"):
     import transformers.masking_utils
+    from transformers.models.olmoe.modeling_olmoe import OlmoEMoE
 
 
 if TYPE_CHECKING:
@@ -7519,3 +7520,109 @@ class AfmoeModelPatcher(OVDecoderModelPatcher):
                 afmoe_moe = layer.mlp
                 afmoe_moe.forward = afmoe_moe._orig_forward
                 del afmoe_moe.down_projs, afmoe_moe.gate_projs, afmoe_moe.up_projs
+
+
+# Patch OlMOE MoE implementation to enable correct Torch tracing:
+#
+# The original code contains a conditional branch inside a Python for-loop.
+# For certain example inputs, this branch may be skipped during tracing,
+# resulting in an incorrect or incomplete final graph.
+#
+# Additionally, the non-vectorized implementation produces a very large
+# OpenVINO graph with excessive nodes, which is expensive for graph
+# transformations and significantly increases model conversion time.
+# So the patch provides a vectorized form of MoE.
+def olmoe_moe_forward_patched(self, hidden_states):
+    num_experts = self.config.num_experts
+    batch_size, seq_len, hidden_dim = hidden_states.shape
+    
+    # Get routing weights using the gate
+    router_logits = self.gate(hidden_states)
+    routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float)
+    routing_weights, selected_experts = torch.topk(routing_weights, self.config.num_experts_per_tok, dim=-1)
+    routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+    routing_weights = routing_weights.to(hidden_states.dtype)
+    
+    # Prepare routing weights tensor
+    new_routing_weights = torch.zeros(
+        batch_size * seq_len, self.config.num_experts, dtype=routing_weights.dtype, device=routing_weights.device
+    )
+    new_routing_weights.scatter_(
+        dim=1,
+        index=selected_experts.view(-1, self.config.num_experts_per_tok),
+        src=routing_weights.view(-1, self.config.num_experts_per_tok),
+    )
+    
+    # Prepare hidden states for vectorized processing
+    hidden_states = hidden_states.view(-1, hidden_dim)
+    hidden_states = hidden_states.repeat(num_experts, 1)
+    hidden_states = hidden_states.view(num_experts, -1, hidden_dim)
+    act_fn = self.experts[0].act_fn
+    
+    # Compute experts outputs in a vectorized form
+    gate = torch.bmm(hidden_states, self.gate_projs)
+    up = torch.bmm(hidden_states, self.up_projs)
+    gate_up = act_fn(gate) * up
+    next_states = torch.bmm(gate_up, self.down_projs)
+    next_states = next_states.view(num_experts, batch_size, -1, hidden_dim)
+    next_states = next_states * new_routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
+    next_states = next_states.sum(dim=0)
+    
+    output = next_states.view(batch_size, seq_len, hidden_dim)
+    return output
+
+
+class OlmoeModelPatcher(OVDecoderModelPatcher):
+    def __enter__(self):
+        super().__enter__()
+        if not is_transformers_version(">=", "4.56"):
+            return self
+        
+        for idx, layer in enumerate(self._model.model.layers):
+            if isinstance(layer.mlp, OlmoEMoE):
+                olmoe_moe = layer.mlp
+                num_experts = olmoe_moe.config.num_experts
+                olmoe_moe._orig_forward = olmoe_moe.forward
+                olmoe_moe.forward = types.MethodType(olmoe_moe_forward_patched, olmoe_moe)
+                
+                # Prepare weights to combine them from all experts to get the common gate, up and down weights
+                # this is required for vectorized batched matmul representation of MoE
+                # Fix CVS-180119: currently OpenVINO PyTorch Frontend incorrectly patching torch.bmm operation
+                # with bf16 weights that leads to operands types mismatch in torch.bmm during TorchScript tracing
+                # Now we align with hidden_states (that will be always fp32 due to patching
+                # above for embedding layer during tracing)
+                olmoe_moe.down_projs = (
+                    torch.concat(
+                        tuple(olmoe_moe.experts[i].down_proj.weight.unsqueeze(0) for i in range(num_experts)),
+                        dim=0,
+                    )
+                    .transpose(1, 2)
+                    .float()
+                )
+                olmoe_moe.gate_projs = (
+                    torch.concat(
+                        tuple(olmoe_moe.experts[i].gate_proj.weight.unsqueeze(0) for i in range(num_experts)),
+                        dim=0,
+                    )
+                    .transpose(1, 2)
+                    .float()
+                )
+                olmoe_moe.up_projs = (
+                    torch.concat(
+                        tuple(olmoe_moe.experts[i].up_proj.weight.unsqueeze(0) for i in range(num_experts)), dim=0
+                    )
+                    .transpose(1, 2)
+                    .float()
+                )
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        super().__exit__(exc_type, exc_value, traceback)
+        if not is_transformers_version(">=", "4.56"):
+            return
+        
+        for idx, layer in enumerate(self._model.model.layers):
+            if isinstance(layer.mlp, OlmoEMoE):
+                olmoe_moe = layer.mlp
+                olmoe_moe.forward = olmoe_moe._orig_forward
+                del olmoe_moe.down_projs, olmoe_moe.gate_projs, olmoe_moe.up_projs

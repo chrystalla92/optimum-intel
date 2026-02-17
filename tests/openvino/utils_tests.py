@@ -151,6 +151,7 @@ MODEL_NAMES = {
     "nanollava_vision_tower": "optimum-intel-internal-testing/tiny-random-siglip",
     "nystromformer": "optimum-intel-internal-testing/tiny-random-NystromformerModel",
     "olmo": "optimum-intel-internal-testing/tiny-random-olmo-hf",
+    "olmoe": "optimum-intel-internal-testing/tiny-random-olmoe",  # Dynamic model creation (4 layers, 8 experts, top-k=2)
     "orion": "optimum-intel-internal-testing/tiny-random-orion",
     "pegasus": "optimum-intel-internal-testing/tiny-random-pegasus",
     "perceiver_text": "optimum-intel-internal-testing/tiny-random-language_perceiver",
@@ -357,6 +358,7 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
     "cohere2": {"model": 16},
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
+    "olmoe": {"model": 16},
 }
 
 TEST_IMAGE_URL = "http://images.cocodataset.org/val2017/000000039769.jpg"

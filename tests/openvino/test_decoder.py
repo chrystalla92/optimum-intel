@@ -105,7 +105,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     SUPPORTED_ARCHITECTURES += SUPPORTED_SSM_ARCHITECTURES
 
     if is_transformers_version(">=", "4.46.0"):
-        SUPPORTED_ARCHITECTURES += ("glm", "mistral-nemo", "phimoe")
+        SUPPORTED_ARCHITECTURES += ("glm", "mistral-nemo", "olmoe", "phimoe")
 
         if is_transformers_version("<", "4.54.0"):
             SUPPORTED_ARCHITECTURES += ("deepseek",)
@@ -180,6 +180,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         "mpt": 5,
         "nemotron": 2,
         "olmo2": 2,
+        "olmoe": 4,
         "opt": 5 if is_transformers_version(">=", "4.46") else 0,
         "pegasus": 2,
         "qwen": 2,
