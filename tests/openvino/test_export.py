@@ -24,6 +24,7 @@ from utils_tests import (
     MODEL_NAMES,
     OPENVINO_DEVICE,
     REMOTE_CODE_MODELS,
+    get_tiny_olmoe_model,
 )
 
 from optimum.exporters.onnx.constants import SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED
@@ -110,6 +111,9 @@ class ExportModelTest(unittest.TestCase):
     if is_transformers_version(">=", "4.55.0") and is_transformers_version("<", "4.58.0"):
         SUPPORTED_ARCHITECTURES.update({"afmoe": OVModelForCausalLM})
 
+    if is_transformers_version(">=", "4.45.0"):
+        SUPPORTED_ARCHITECTURES.update({"olmoe": OVModelForCausalLM})
+
     EXPECTED_DIFFUSERS_SCALE_FACTORS = {
         "stable-diffusion-xl": {"vae_encoder": "128.0", "vae_decoder": "128.0"},
         "stable-diffusion-3": {"text_encoder_3": "8.0"},
@@ -133,22 +137,32 @@ class ExportModelTest(unittest.TestCase):
         auto_model = self.SUPPORTED_ARCHITECTURES[model_type]
         task = auto_model.export_feature
         model_name = MODEL_NAMES[model_type]
-        library_name = TasksManager.infer_library_from_model(model_name)
-        loading_kwargs = {"attn_implementation": "eager"} if model_type in SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED else {}
-
-        if model_type in REMOTE_CODE_MODELS:
-            loading_kwargs["trust_remote_code"] = True
-
-        if library_name == "timm":
-            model_class = TasksManager.get_model_class_for_task(task, library=library_name)
-            model = model_class(f"hf_hub:{model_name}", pretrained=True, exportable=True)
-            TasksManager.standardize_model_attributes(model_name, model, library_name=library_name)
-        elif model_type == "llava":
-            model = MODEL_TYPE_TO_CLS_MAPPING[model_type].auto_model_class.from_pretrained(
-                model_name, **loading_kwargs
-            )
+        
+        # Handle dynamic model creation (olmoe)
+        if model_name == "DYNAMIC":
+            if model_type == "olmoe":
+                # Create tiny model dynamically
+                model, config = get_tiny_olmoe_model()
+                library_name = "transformers"
+            else:
+                raise ValueError(f"Dynamic model creation not implemented for {model_type}")
         else:
-            model = auto_model.auto_model_class.from_pretrained(model_name, **loading_kwargs)
+            library_name = TasksManager.infer_library_from_model(model_name)
+            loading_kwargs = {"attn_implementation": "eager"} if model_type in SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED else {}
+
+            if model_type in REMOTE_CODE_MODELS:
+                loading_kwargs["trust_remote_code"] = True
+
+            if library_name == "timm":
+                model_class = TasksManager.get_model_class_for_task(task, library=library_name)
+                model = model_class(f"hf_hub:{model_name}", pretrained=True, exportable=True)
+                TasksManager.standardize_model_attributes(model_name, model, library_name=library_name)
+            elif model_type == "llava":
+                model = MODEL_TYPE_TO_CLS_MAPPING[model_type].auto_model_class.from_pretrained(
+                    model_name, **loading_kwargs
+                )
+            else:
+                model = auto_model.auto_model_class.from_pretrained(model_name, **loading_kwargs)
 
         if getattr(model.config, "model_type", None) == "pix2struct":
             preprocessors = maybe_load_preprocessors(model_name)

@@ -17,6 +17,7 @@ from utils_tests import (
     REMOTE_CODE_MODELS,
     SEED,
     get_num_sdpa,
+    get_tiny_olmoe_model,
     mock_torch_cuda_is_available,
     patch_awq_for_inference,
 )
@@ -147,6 +148,9 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     if is_transformers_version(">=", "4.55.0") and is_transformers_version("<", "4.58.0"):
         SUPPORTED_ARCHITECTURES += ("afmoe",)
 
+    if is_transformers_version(">=", "4.45.0"):
+        SUPPORTED_ARCHITECTURES += ("olmoe",)
+
     if is_transformers_version("<", "4.56.0"):
         SUPPORTED_ARCHITECTURES += ("qwen", "chatglm", "chatglm4")
 
@@ -198,6 +202,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         "decilm": 4,
         "gemma": 1,
         "olmo": 2,
+        "olmoe": 2,
         "stablelm": 2,
         "starcoder2": 2,
         "dbrx": 2,
@@ -244,6 +249,11 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
 
     def get_tokenizer(self, model_arch: str):
         model_id = MODEL_NAMES[model_arch]
+        # Handle dynamic model creation (olmoe)
+        if model_id == "DYNAMIC":
+            # Use reference model for tokenizer
+            if model_arch == "olmoe":
+                model_id = "allenai/OLMoE-1B-7B-0924"
         trust_remote_code = model_arch in REMOTE_CODE_MODELS
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
         if tokenizer.pad_token is None:
@@ -311,9 +321,25 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         if model_arch == "gemma2":
             model_kwargs["attn_implementation"] = "sdpa"
 
-        ov_model = OVModelForCausalLM.from_pretrained(
-            model_id, export=True, ov_config=F32_CONFIG, device=OPENVINO_DEVICE, **model_kwargs
-        )
+        # Handle dynamic model creation (olmoe)
+        if model_id == "DYNAMIC":
+            if model_arch == "olmoe":
+                # Create tiny model dynamically
+                transformers_model_for_export, config = get_tiny_olmoe_model()
+                # Export to OpenVINO
+                ov_model = OVModelForCausalLM._from_transformers(
+                    transformers_model_for_export, 
+                    config=config,
+                    ov_config=F32_CONFIG,
+                    **model_kwargs
+                )
+                ov_model.to(OPENVINO_DEVICE)
+            else:
+                raise ValueError(f"Dynamic model creation not implemented for {model_arch}")
+        else:
+            ov_model = OVModelForCausalLM.from_pretrained(
+                model_id, export=True, ov_config=F32_CONFIG, device=OPENVINO_DEVICE, **model_kwargs
+            )
         self.assertIsInstance(ov_model.config, PretrainedConfig)
         self.assertTrue(ov_model.use_cache)
         tokenizer = self.get_tokenizer(model_arch)
@@ -359,8 +385,16 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
             model_kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
 
         set_seed(SEED)
-        with mock_torch_cuda_is_available("awq" in model_arch or "gptq" in model_arch):
-            transformers_model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+        # Handle dynamic model - reuse the already created model for olmoe
+        if MODEL_NAMES[model_arch] == "DYNAMIC":
+            if model_arch == "olmoe":
+                # Reuse the model created earlier (it's already in transformers_model_for_export)
+                transformers_model = transformers_model_for_export
+            else:
+                raise ValueError(f"Dynamic model creation not implemented for {model_arch}")
+        else:
+            with mock_torch_cuda_is_available("awq" in model_arch or "gptq" in model_arch):
+                transformers_model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
         if model_arch in ["qwen", "arctic", "chatglm4", "gpt_oss_mxfp4"]:
             transformers_model.to(torch.float32)
 
@@ -446,6 +480,11 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         set_seed(SEED)
         model_kwargs = {}
         model_id = MODEL_NAMES[model_arch]
+        
+        # Skip pipeline test for dynamic models (no persistent model path)
+        if model_id == "DYNAMIC":
+            self.skipTest(f"Pipeline test skipped for {model_arch} (dynamic model creation)")
+        
         if model_arch in REMOTE_CODE_MODELS:
             model_kwargs = {"trust_remote_code": True}
         tokenizer = self.get_tokenizer(model_arch)
@@ -631,6 +670,11 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         self.mock_torch_compile(model_arch)
         model_kwargs = {}
         model_id = MODEL_NAMES[model_arch]
+        
+        # Skip beam search test for dynamic models (no persistent model path)
+        if model_id == "DYNAMIC":
+            self.skipTest(f"Beam search test skipped for {model_arch} (dynamic model creation)")
+        
         if model_arch in REMOTE_CODE_MODELS:
             model_kwargs = {"trust_remote_code": True}
 

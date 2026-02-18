@@ -151,6 +151,7 @@ MODEL_NAMES = {
     "nanollava_vision_tower": "optimum-intel-internal-testing/tiny-random-siglip",
     "nystromformer": "optimum-intel-internal-testing/tiny-random-NystromformerModel",
     "olmo": "optimum-intel-internal-testing/tiny-random-olmo-hf",
+    "olmoe": "DYNAMIC",  # Special marker: use get_tiny_olmoe_model() instead
     "orion": "optimum-intel-internal-testing/tiny-random-orion",
     "pegasus": "optimum-intel-internal-testing/tiny-random-pegasus",
     "perceiver_text": "optimum-intel-internal-testing/tiny-random-language_perceiver",
@@ -357,6 +358,8 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
     "cohere2": {"model": 16},
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
+    # OlMOE: TBD - value needs empirical determination via quantization tests
+    "olmoe": {"model": "<TBD>"},
 }
 
 TEST_IMAGE_URL = "http://images.cocodataset.org/val2017/000000039769.jpg"
@@ -383,6 +386,7 @@ REMOTE_CODE_MODELS = (
     "decilm",
     "minicpm3",
     "deepseek",
+    "olmoe",
 )
 
 
@@ -493,6 +497,100 @@ def check_compression_state_per_model(
     # Check fake nodes
     if expected_num_fake_nodes_per_model is not None:
         test_case.assertEqual(expected_num_fake_nodes_per_model, actual_num_fake_nodes_per_model)
+
+
+def create_tiny_olmoe_config():
+    """
+    Create a minimal OlMOE configuration for testing purposes.
+    
+    This function loads the OlMOE config class (requiring trust_remote_code)
+    and creates a minimal configuration suitable for fast testing.
+    
+    Returns:
+        OlMOEConfig: A minimal OlMOE configuration with 2 hidden layers.
+    """
+    from transformers import AutoConfig
+    
+    # Load a reference config with trust_remote_code to get the config class
+    # This downloads only the config file and model code (not weights)
+    reference_config = AutoConfig.from_pretrained(
+        "allenai/OLMoE-1B-7B-0924",
+        trust_remote_code=True
+    )
+    
+    # Get the config class
+    config_class = reference_config.__class__
+    
+    # Create minimal configuration for fast testing
+    # We create a new instance with tiny parameters
+    tiny_config = config_class(
+        vocab_size=1000,  # Small vocabulary
+        hidden_size=64,  # Small hidden dimension
+        intermediate_size=128,  # Small intermediate size
+        num_hidden_layers=2,  # Required: matches EXPECTED_NUM_SDPA requirement
+        num_attention_heads=4,  # Minimal attention heads
+        num_key_value_heads=2,  # Minimal KV heads for GQA
+        max_position_embeddings=512,  # Short sequence length
+        # MoE-specific settings - these may need adjustment based on actual OlMOE config
+        num_experts=8,  # Minimal number of experts
+        num_experts_per_tok=2,  # Top-k experts per token
+        # Other settings
+        use_cache=True,
+        tie_word_embeddings=False,
+    )
+    
+    return tiny_config
+
+
+def get_tiny_olmoe_model():
+    """
+    Create and initialize a tiny OlMOE model with random weights for testing.
+    
+    This function creates a minimal OlMOE model instance without downloading
+    the full model weights, making it suitable for fast testing.
+    
+    Returns:
+        tuple: (model, config) - The initialized model and its configuration.
+    """
+    # Create the tiny config (this loads the config class with trust_remote_code)
+    config = create_tiny_olmoe_config()
+    
+    # After loading config with trust_remote_code, the model class is available
+    # We can get it directly from the config's auto_map
+    if hasattr(config, 'auto_map') and 'AutoModelForCausalLM' in config.auto_map:
+        # For models with trust_remote_code, the class path is in auto_map
+        model_class_path = config.auto_map['AutoModelForCausalLM']
+        # Parse the class path: "module_name.ClassName"
+        if '.' in model_class_path:
+            # Handle both "module.Class" and "module.submodule.Class" formats
+            parts = model_class_path.split('.')
+            module_name = '.'.join(parts[:-1])
+            class_name = parts[-1]
+        else:
+            # Edge case: just class name
+            module_name = 'transformers'
+            class_name = model_class_path
+        
+        # Import the model class
+        import importlib
+        try:
+            # Try importing from the cached transformers module
+            module = importlib.import_module(module_name)
+            model_class = getattr(module, class_name)
+        except (ImportError, AttributeError):
+            # Fallback: the module might be in transformers.models
+            module = importlib.import_module(f'transformers.models.{module_name}')
+            model_class = getattr(module, class_name)
+        
+        # Instantiate the model with our tiny config
+        model = model_class(config)
+    else:
+        # Fallback: use AutoModelForCausalLM.from_config
+        # This should work after the config class is loaded
+        from transformers import AutoModelForCausalLM
+        model = AutoModelForCausalLM.from_config(config)
+    
+    return model, config
 
 
 def get_num_sdpa(model):

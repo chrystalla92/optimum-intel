@@ -7519,3 +7519,85 @@ class AfmoeModelPatcher(OVDecoderModelPatcher):
                 afmoe_moe = layer.mlp
                 afmoe_moe.forward = afmoe_moe._orig_forward
                 del afmoe_moe.down_projs, afmoe_moe.gate_projs, afmoe_moe.up_projs
+
+
+def olmoe_moe_forward_patched(self, hidden_states):
+    num_experts = self.config.num_experts
+    batch_size, seq_len, hidden_dim = hidden_states.shape
+    routing_weights, selected_experts = self.router(hidden_states)
+    new_routing_weights = torch.zeros(batch_size * seq_len, self.config.num_experts, dtype=routing_weights.dtype)
+    new_routing_weights.scatter_(dim=1, index=selected_experts, src=routing_weights)
+    hidden_states = hidden_states.view(-1, hidden_dim)
+
+    # Process through shared experts
+    if hasattr(self, "shared_experts") and self.shared_experts is not None:
+        shared_output = self.shared_experts(hidden_states)
+    else:
+        shared_output = torch.zeros_like(hidden_states)
+
+    hidden_states = hidden_states.repeat(num_experts, 1)
+    hidden_states = hidden_states.view(num_experts, -1, hidden_dim)
+    act_fn = self.experts[0].act_fn
+
+    # compute experts outputs in a vectorized form
+    gate = torch.bmm(hidden_states, self.gate_projs)
+    up = torch.bmm(hidden_states, self.up_projs)
+    gate_up = act_fn(gate) * up
+    next_states = torch.bmm(gate_up, self.down_projs)
+    next_states = next_states.view(num_experts, batch_size, -1, hidden_dim)
+    next_states = next_states * new_routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
+    next_states = next_states.sum(dim=0)
+
+    shared_output = shared_output.view(batch_size, -1, hidden_dim)
+    output = shared_output + next_states
+    return output.view(batch_size, seq_len, hidden_dim)
+
+
+class OlMOEModelPatcher(OVDecoderModelPatcher):
+    def __enter__(self):
+        super().__enter__()
+        for idx, layer in enumerate(self._model.model.layers):
+            # OlMOE has MoE in the mlp layer, check if it has experts attribute
+            if hasattr(layer.mlp, "experts") and hasattr(layer.mlp, "router"):
+                olmoe_moe = layer.mlp
+                num_experts = olmoe_moe.config.num_experts
+                olmoe_moe._orig_forward = olmoe_moe.forward
+                olmoe_moe.forward = types.MethodType(olmoe_moe_forward_patched, olmoe_moe)
+
+                # prepare weights to combine them from all experts to get the common gate, up and down weights
+                # this is required for vectorized batched matmul representation of MoE
+                # Fix CVS-180119: currently OpenVINO PyTorch Frontend incorrectly patching torch.bmm operation
+                # with bf16 weights that leads to operands types mismatch in torch.bmm during TorchScript tracing
+                # Now we align with hidden_states (that will be always fp32 due to patching
+                # above for embedding layer during tracing)
+                olmoe_moe.down_projs = (
+                    torch.concat(
+                        tuple(olmoe_moe.experts[i].down_proj.weight.unsqueeze(0) for i in range(num_experts)),
+                        dim=0,
+                    )
+                    .transpose(1, 2)
+                    .float()
+                )
+                olmoe_moe.gate_projs = (
+                    torch.concat(
+                        tuple(olmoe_moe.experts[i].gate_proj.weight.unsqueeze(0) for i in range(num_experts)),
+                        dim=0,
+                    )
+                    .transpose(1, 2)
+                    .float()
+                )
+                olmoe_moe.up_projs = (
+                    torch.concat(
+                        tuple(olmoe_moe.experts[i].up_proj.weight.unsqueeze(0) for i in range(num_experts)), dim=0
+                    )
+                    .transpose(1, 2)
+                    .float()
+                )
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        super().__exit__(exc_type, exc_value, traceback)
+        for idx, layer in enumerate(self._model.model.layers):
+            if hasattr(layer.mlp, "experts") and hasattr(layer.mlp, "router") and hasattr(layer.mlp, "_orig_forward"):
+                olmoe_moe = layer.mlp
+                olmoe_moe.forward = olmoe_moe._orig_forward
+                del olmoe_moe.down_projs, olmoe_moe.gate_projs, olmoe_moe.up_projs, olmoe_moe._orig_forward
