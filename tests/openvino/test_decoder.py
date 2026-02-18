@@ -132,6 +132,9 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     if is_transformers_version(">=", "4.52.1"):
         SUPPORTED_ARCHITECTURES += ("bitnet",)
 
+    if is_transformers_version(">=", "4.45.0"):
+        SUPPORTED_ARCHITECTURES += ("olmoe",)
+
     if is_transformers_version(">=", "4.48.0"):
         SUPPORTED_ARCHITECTURES += ("cohere2",)
 
@@ -180,6 +183,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         "mpt": 5,
         "nemotron": 2,
         "olmo2": 2,
+        "olmoe": 2,
         "opt": 5 if is_transformers_version(">=", "4.46") else 0,
         "pegasus": 2,
         "qwen": 2,

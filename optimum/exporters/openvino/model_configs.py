@@ -178,6 +178,7 @@ from .model_patcher import (
     MistralModelPatcher,
     MixtralModelPatcher,
     MPTModelPatcher,
+    OlmoeModelPatcher,
     OVDecoderModelPatcher,
     OVSeq2SeqModelPatcher,
     OVSpeechT5ModelPatcher,
@@ -874,6 +875,19 @@ class OrionOpenVINOConfig(TextDecoderWithPositionIdsOnnxConfig):
 class OlmoOpenVINOConfig(LlamaOpenVINOConfig):
     DEFAULT_ONNX_OPSET = 14
     NORMALIZED_CONFIG_CLASS = NormalizedTextConfig
+
+
+@register_in_tasks_manager(
+    "olmoe",
+    *[
+        "text-generation",
+        "text-generation-with-past",
+    ],
+    library_name="transformers",
+)
+class OlmoeOpenVINOConfig(LlamaOpenVINOConfig):
+    MIN_TRANSFORMERS_VERSION = "4.45.0"
+    _MODEL_PATCHER = OlmoeModelPatcher
 
 
 @register_in_tasks_manager(

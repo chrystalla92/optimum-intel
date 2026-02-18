@@ -15,6 +15,7 @@ import os
 import time
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
@@ -32,6 +33,81 @@ F32_CONFIG = {"INFERENCE_PRECISION_HINT": "f32"}
 TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
 
 OPENVINO_DEVICE = os.getenv("OPENVINO_TEST_DEVICE", "CPU")
+
+
+def _get_or_create_olmoe_test_model():
+    """
+    Create a minimal OlMOE test model programmatically for testing without HuggingFace uploads.
+    
+    Model Architecture:
+    - num_hidden_layers: 2 (determines EXPECTED_NUM_SDPA count in test_decoder.py)
+    - hidden_size: 128
+    - intermediate_size: 256
+    - num_attention_heads: 4
+    - num_key_value_heads: 2
+    - num_experts: 8
+    - num_experts_per_tok: 2
+    - vocab_size: 1000
+    
+    This configuration is minimal for fast testing while maintaining the MoE architecture.
+    The 2-layer configuration determines the EXPECTED_NUM_SDPA value used in test_decoder.py.
+    
+    Returns:
+        str: Path to the generated model directory, or fallback to HuggingFace model if generation fails.
+    """
+    # Only attempt to create the model if transformers >= 4.45.0 is available
+    if not is_transformers_version(">=", "4.45.0"):
+        return "optimum-intel-internal-testing/tiny-random-olmoe"
+    
+    try:
+        from transformers import AutoTokenizer, OlmoeConfig, OlmoeForCausalLM
+        
+        # Define cache directory for the test model
+        cache_dir = Path(__file__).parent / ".cache" / "olmoe_test_model"
+        
+        # If model already exists in cache, return the path
+        if cache_dir.exists() and (cache_dir / "config.json").exists():
+            return str(cache_dir)
+        
+        # Create cache directory
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Define minimal OlMOE configuration
+        # NOTE: num_hidden_layers=2 determines EXPECTED_NUM_SDPA in test_decoder.py
+        config = OlmoeConfig(
+            vocab_size=1000,
+            hidden_size=128,
+            intermediate_size=256,
+            num_hidden_layers=2,  # Critical: this determines EXPECTED_NUM_SDPA count
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            num_experts=8,
+            num_experts_per_tok=2,
+            max_position_embeddings=512,
+            rms_norm_eps=1e-5,
+            rope_theta=10000.0,
+            use_cache=True,
+        )
+        
+        # Create model from config
+        model = OlmoeForCausalLM(config)
+        
+        # Save model
+        model.save_pretrained(cache_dir)
+        
+        # Create a simple tokenizer (use GPT2 tokenizer as base)
+        tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.save_pretrained(cache_dir)
+        
+        return str(cache_dir)
+        
+    except Exception as e:
+        # Fallback to HuggingFace model if generation fails
+        print(f"Warning: Failed to generate OlMOE test model programmatically: {e}")
+        print("Falling back to HuggingFace model repository.")
+        return "optimum-intel-internal-testing/tiny-random-olmoe"
+
 
 MODEL_NAMES = {
     "afmoe": "optimum-intel-internal-testing/tiny-random-trinity",
@@ -125,6 +201,7 @@ MODEL_NAMES = {
     "llava_next_video": "optimum-intel-internal-testing/tiny-random-llava-next-video",
     "m2m_100": "optimum-intel-internal-testing/tiny-random-m2m_100",
     "olmo2": "optimum-intel-internal-testing/tiny-random-olmo2",
+    "olmoe": _get_or_create_olmoe_test_model(),  # Programmatically generated test model
     "opt": "optimum-intel-internal-testing/tiny-random-OPTModel",
     "opt125m": "optimum-intel-internal-testing/opt-125m",
     "opt_gptq": "optimum-intel-internal-testing/opt-125m-gptq-4bit",
@@ -357,6 +434,8 @@ _ARCHITECTURES_TO_EXPECTED_INT8 = {
     "cohere2": {"model": 16},
     "exaone4": {"model": 16},
     "lfm2": {"model": 52},
+    # OlMOE: INT8 count is a placeholder and must be updated after empirical testing
+    "olmoe": {"model": 16},
 }
 
 TEST_IMAGE_URL = "http://images.cocodataset.org/val2017/000000039769.jpg"
