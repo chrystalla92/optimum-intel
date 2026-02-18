@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from utils_tests import (
     MODEL_NAMES,
     OPENVINO_DEVICE,
     REMOTE_CODE_MODELS,
+    create_tiny_random_olmoe_model,
 )
 
 from optimum.exporters.onnx.constants import SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED
@@ -110,6 +113,9 @@ class ExportModelTest(unittest.TestCase):
     if is_transformers_version(">=", "4.55.0") and is_transformers_version("<", "4.58.0"):
         SUPPORTED_ARCHITECTURES.update({"afmoe": OVModelForCausalLM})
 
+    if is_transformers_version(">=", "4.48.0"):
+        SUPPORTED_ARCHITECTURES.update({"olmoe": OVModelForCausalLM})
+
     EXPECTED_DIFFUSERS_SCALE_FACTORS = {
         "stable-diffusion-xl": {"vae_encoder": "128.0", "vae_decoder": "128.0"},
         "stable-diffusion-3": {"text_encoder_3": "8.0"},
@@ -130,96 +136,108 @@ class ExportModelTest(unittest.TestCase):
         patch_16bit_model: bool = False,
         model_kwargs: dict = None,
     ):
-        auto_model = self.SUPPORTED_ARCHITECTURES[model_type]
-        task = auto_model.export_feature
-        model_name = MODEL_NAMES[model_type]
-        library_name = TasksManager.infer_library_from_model(model_name)
-        loading_kwargs = {"attn_implementation": "eager"} if model_type in SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED else {}
-
-        if model_type in REMOTE_CODE_MODELS:
-            loading_kwargs["trust_remote_code"] = True
-
-        if library_name == "timm":
-            model_class = TasksManager.get_model_class_for_task(task, library=library_name)
-            model = model_class(f"hf_hub:{model_name}", pretrained=True, exportable=True)
-            TasksManager.standardize_model_attributes(model_name, model, library_name=library_name)
-        elif model_type == "llava":
-            model = MODEL_TYPE_TO_CLS_MAPPING[model_type].auto_model_class.from_pretrained(
-                model_name, **loading_kwargs
-            )
+        # Handle programmatic model creation for olmoe
+        tmp_dir = None
+        if model_type == "olmoe":
+            tmp_dir = tempfile.mkdtemp()
+            model_name = create_tiny_random_olmoe_model(tmp_dir)
         else:
-            model = auto_model.auto_model_class.from_pretrained(model_name, **loading_kwargs)
+            model_name = MODEL_NAMES[model_type]
 
-        if getattr(model.config, "model_type", None) == "pix2struct":
-            preprocessors = maybe_load_preprocessors(model_name)
-        else:
-            preprocessors = None
+        try:
+            auto_model = self.SUPPORTED_ARCHITECTURES[model_type]
+            task = auto_model.export_feature
+            library_name = TasksManager.infer_library_from_model(model_name)
+            loading_kwargs = {"attn_implementation": "eager"} if model_type in SDPA_ARCHS_ONNX_EXPORT_NOT_SUPPORTED else {}
 
-        supported_tasks = (task, task + "-with-past") if "text-generation" in task else (task,)
-        for supported_task in supported_tasks:
-            with TemporaryDirectory() as tmpdirname:
-                export_from_model(
-                    model=model,
-                    output=Path(tmpdirname),
-                    task=supported_task,
-                    preprocessors=preprocessors,
-                    stateful=stateful,
-                    model_kwargs=model_kwargs,
+            if model_type in REMOTE_CODE_MODELS:
+                loading_kwargs["trust_remote_code"] = True
+
+            if library_name == "timm":
+                model_class = TasksManager.get_model_class_for_task(task, library=library_name)
+                model = model_class(f"hf_hub:{model_name}", pretrained=True, exportable=True)
+                TasksManager.standardize_model_attributes(model_name, model, library_name=library_name)
+            elif model_type == "llava":
+                model = MODEL_TYPE_TO_CLS_MAPPING[model_type].auto_model_class.from_pretrained(
+                    model_name, **loading_kwargs
                 )
+            else:
+                model = auto_model.auto_model_class.from_pretrained(model_name, **loading_kwargs)
 
-                use_cache = supported_task.endswith("-with-past")
-                ov_model = auto_model.from_pretrained(
-                    tmpdirname, use_cache=use_cache, trust_remote_code=model_type in REMOTE_CODE_MODELS
-                )
-                self.assertIsInstance(ov_model, OVBaseModel)
+            if getattr(model.config, "model_type", None) == "pix2struct":
+                preprocessors = maybe_load_preprocessors(model_name)
+            else:
+                preprocessors = None
 
-                if "text-generation" in task:
-                    self.assertEqual(ov_model.use_cache, use_cache)
-
-                if task == "text-generation":
-                    self.assertEqual(ov_model.stateful, stateful and use_cache)
-                    self.assertEqual(
-                        ov_model.model.get_rt_info()["optimum"]["transformers_version"], _transformers_version
-                    )
-                    self.assertTrue(ov_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"]))
-                    self.assertTrue(ov_model.model.has_rt_info(["runtime_options", "KV_CACHE_PRECISION"]))
-
-                if task == "image-text-to-text":
-                    self.assertTrue(
-                        ov_model.language_model.model.has_rt_info(["runtime_options", "KV_CACHE_PRECISION"])
-                    )
-                    self.assertTrue(
-                        ov_model.language_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"])
+            supported_tasks = (task, task + "-with-past") if "text-generation" in task else (task,)
+            for supported_task in supported_tasks:
+                with TemporaryDirectory() as tmpdirname:
+                    export_from_model(
+                        model=model,
+                        output=Path(tmpdirname),
+                        task=supported_task,
+                        preprocessors=preprocessors,
+                        stateful=stateful,
+                        model_kwargs=model_kwargs,
                     )
 
-                if library_name == "diffusers":
-                    expected_scale_factors = self.EXPECTED_DIFFUSERS_SCALE_FACTORS.get(model_type, {})
-                    components = [
-                        "unet",
-                        "transformer",
-                        "text_encoder",
-                        "text_encoder_2",
-                        "text_encoder_3",
-                        "vae_encoder",
-                        "vae_decoder",
-                    ]
-                    for component in components:
-                        component_model = getattr(ov_model, component, None)
-                        if component_model is None:
-                            continue
-                        component_scale = expected_scale_factors.get(component)
-                        if component_scale is not None:
-                            self.assertTrue(
-                                component_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"])
-                            )
-                            self.assertEqual(
-                                component_model.model.get_rt_info()["runtime_options"]["ACTIVATIONS_SCALE_FACTOR"],
-                                component_scale,
-                            )
-                        else:
-                            self.assertFalse(
-                                component_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"])
-                            )
+                    use_cache = supported_task.endswith("-with-past")
+                    ov_model = auto_model.from_pretrained(
+                        tmpdirname, use_cache=use_cache, trust_remote_code=model_type in REMOTE_CODE_MODELS
+                    )
+                    self.assertIsInstance(ov_model, OVBaseModel)
+
+                    if "text-generation" in task:
+                        self.assertEqual(ov_model.use_cache, use_cache)
+
+                    if task == "text-generation":
+                        self.assertEqual(ov_model.stateful, stateful and use_cache)
+                        self.assertEqual(
+                            ov_model.model.get_rt_info()["optimum"]["transformers_version"], _transformers_version
+                        )
+                        self.assertTrue(ov_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"]))
+                        self.assertTrue(ov_model.model.has_rt_info(["runtime_options", "KV_CACHE_PRECISION"]))
+
+                    if task == "image-text-to-text":
+                        self.assertTrue(
+                            ov_model.language_model.model.has_rt_info(["runtime_options", "KV_CACHE_PRECISION"])
+                        )
+                        self.assertTrue(
+                            ov_model.language_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"])
+                        )
+
+                    if library_name == "diffusers":
+                        expected_scale_factors = self.EXPECTED_DIFFUSERS_SCALE_FACTORS.get(model_type, {})
+                        components = [
+                            "unet",
+                            "transformer",
+                            "text_encoder",
+                            "text_encoder_2",
+                            "text_encoder_3",
+                            "vae_encoder",
+                            "vae_decoder",
+                        ]
+                        for component in components:
+                            component_model = getattr(ov_model, component, None)
+                            if component_model is None:
+                                continue
+                            component_scale = expected_scale_factors.get(component)
+                            if component_scale is not None:
+                                self.assertTrue(
+                                    component_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"])
+                                )
+                                self.assertEqual(
+                                    component_model.model.get_rt_info()["runtime_options"]["ACTIVATIONS_SCALE_FACTOR"],
+                                    component_scale,
+                                )
+                            else:
+                                self.assertFalse(
+                                    component_model.model.has_rt_info(["runtime_options", "ACTIVATIONS_SCALE_FACTOR"])
+                                )
+        finally:
+            # Clean up temporary directory if it was created
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @parameterized.expand(SUPPORTED_ARCHITECTURES)
     def test_export(self, model_type: str):

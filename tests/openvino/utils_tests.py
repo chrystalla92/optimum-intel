@@ -24,6 +24,12 @@ import torch
 from optimum.exporters.tasks import TasksManager
 from optimum.intel.utils.import_utils import is_transformers_version
 
+try:
+    from transformers import OlmoeConfig, OlmoeForCausalLM
+    OLMOE_AVAILABLE = True
+except ImportError:
+    OLMOE_AVAILABLE = False
+
 
 SEED = 42
 
@@ -32,6 +38,57 @@ F32_CONFIG = {"INFERENCE_PRECISION_HINT": "f32"}
 TENSOR_ALIAS_TO_TYPE = {"pt": torch.Tensor, "np": np.ndarray}
 
 OPENVINO_DEVICE = os.getenv("OPENVINO_TEST_DEVICE", "CPU")
+
+
+def create_tiny_random_olmoe_model(tmp_dir: Optional[str] = None):
+    """
+    Create a tiny random OlMOE model for testing purposes.
+    
+    Since no pre-trained tiny OlMOE model exists on HuggingFace, tests must create 
+    models programmatically using this standardized configuration.
+    
+    Args:
+        tmp_dir: Optional directory path to save the model. If provided, the model
+                 will be saved to this directory and the path will be returned.
+                 If None, returns the model instance directly.
+    
+    Returns:
+        If tmp_dir is None: OlmoeForCausalLM instance
+        If tmp_dir is provided: str path to the saved model
+    
+    Raises:
+        ImportError: If OlmoeConfig or OlmoeForCausalLM are not available in transformers
+    """
+    if not OLMOE_AVAILABLE:
+        raise ImportError(
+            "OlmoeConfig and OlmoeForCausalLM are required but not available. "
+            "Please update transformers to a version that supports OlMOE."
+        )
+    
+    # Create configuration with test-appropriate dimensions
+    config = OlmoeConfig(
+        num_hidden_layers=4,
+        hidden_size=256,
+        intermediate_size=512,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        num_experts=8,
+        num_experts_per_tok=2,
+        norm_topk_prob=True,
+        vocab_size=1000,
+        max_position_embeddings=512,
+    )
+    
+    # Initialize random model from config
+    model = OlmoeForCausalLM(config)
+    
+    # Save to directory if requested
+    if tmp_dir is not None:
+        model.save_pretrained(tmp_dir)
+        return tmp_dir
+    
+    return model
+
 
 MODEL_NAMES = {
     "afmoe": "optimum-intel-internal-testing/tiny-random-trinity",
@@ -230,6 +287,7 @@ MODEL_NAMES = {
 _ARCHITECTURES_TO_EXPECTED_INT8 = {
     "afmoe": {"model": 16},
     "bert": {"model": 68},
+    "olmoe": {"model": 20},
     "roberta": {"model": 68},
     "albert": {"model": 84},
     "vit": {"model": 64},
@@ -383,6 +441,7 @@ REMOTE_CODE_MODELS = (
     "decilm",
     "minicpm3",
     "deepseek",
+    "olmoe",
 )
 
 

@@ -2,6 +2,8 @@ import copy
 import gc
 import os
 import platform
+import shutil
+import tempfile
 import unittest
 
 import pytest
@@ -16,6 +18,7 @@ from utils_tests import (
     OPENVINO_DEVICE,
     REMOTE_CODE_MODELS,
     SEED,
+    create_tiny_random_olmoe_model,
     get_num_sdpa,
     mock_torch_cuda_is_available,
     patch_awq_for_inference,
@@ -147,6 +150,9 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     if is_transformers_version(">=", "4.55.0") and is_transformers_version("<", "4.58.0"):
         SUPPORTED_ARCHITECTURES += ("afmoe",)
 
+    if is_transformers_version(">=", "4.48.0"):
+        SUPPORTED_ARCHITECTURES += ("olmoe",)
+
     if is_transformers_version("<", "4.56.0"):
         SUPPORTED_ARCHITECTURES += ("qwen", "chatglm", "chatglm4")
 
@@ -155,6 +161,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     EXPECTED_NUM_SDPA = {
         "afmoe": 4,
         "bart": 2,
+        "olmoe": 4,
         "baichuan2": 2,
         "baichuan2-13b": 2,
         "bigbird_pegasus": 2 if is_transformers_version(">=", "4.52") else 0,
@@ -242,8 +249,9 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
             # ensure restoration happens even if test fails
             self.addCleanup(lambda: setattr(torch, "compile", original_torch_compile))
 
-    def get_tokenizer(self, model_arch: str):
-        model_id = MODEL_NAMES[model_arch]
+    def get_tokenizer(self, model_arch: str, model_id: str = None):
+        if model_id is None:
+            model_id = MODEL_NAMES[model_arch]
         trust_remote_code = model_arch in REMOTE_CODE_MODELS
         tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
         if tokenizer.pad_token is None:
@@ -298,7 +306,14 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     @parameterized.expand(SUPPORTED_ARCHITECTURES)
     def test_compare_to_transformers(self, model_arch):
         self.mock_torch_compile(model_arch)
-        model_id = MODEL_NAMES[model_arch]
+        
+        # Handle programmatic model creation for olmoe
+        tmp_dir = None
+        if model_arch == "olmoe":
+            tmp_dir = tempfile.mkdtemp()
+            model_id = create_tiny_random_olmoe_model(tmp_dir)
+        else:
+            model_id = MODEL_NAMES[model_arch]
 
         not_stateful = []
         set_seed(SEED)
@@ -316,7 +331,7 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         )
         self.assertIsInstance(ov_model.config, PretrainedConfig)
         self.assertTrue(ov_model.use_cache)
-        tokenizer = self.get_tokenizer(model_arch)
+        tokenizer = self.get_tokenizer(model_arch, model_id)
         tokens = tokenizer("This is a sample output", return_tensors="pt")
 
         ov_outputs = ov_model(**tokens)
@@ -437,6 +452,10 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         del transformers_model
         del ov_model
         gc.collect()
+        
+        # Cleanup temporary directory for programmatically created models
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @parameterized.expand(SUPPORTED_ARCHITECTURES)
     @pytest.mark.run_slow
@@ -445,10 +464,18 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         self.mock_torch_compile(model_arch)
         set_seed(SEED)
         model_kwargs = {}
-        model_id = MODEL_NAMES[model_arch]
+        
+        # Handle programmatic model creation for olmoe
+        tmp_dir = None
+        if model_arch == "olmoe":
+            tmp_dir = tempfile.mkdtemp()
+            model_id = create_tiny_random_olmoe_model(tmp_dir)
+        else:
+            model_id = MODEL_NAMES[model_arch]
+            
         if model_arch in REMOTE_CODE_MODELS:
             model_kwargs = {"trust_remote_code": True}
-        tokenizer = self.get_tokenizer(model_arch)
+        tokenizer = self.get_tokenizer(model_arch, model_id)
 
         if model_arch == "qwen":
             tokenizer._convert_tokens_to_ids = lambda x: 0
@@ -497,6 +524,10 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
         del pipe
         del model
         gc.collect()
+        
+        # Cleanup temporary directory for programmatically created models
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_model_and_decoder_same_device(self):
         model_id = MODEL_NAMES["gpt2"]
@@ -630,7 +661,15 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
     def test_beam_search(self, model_arch):
         self.mock_torch_compile(model_arch)
         model_kwargs = {}
-        model_id = MODEL_NAMES[model_arch]
+        
+        # Handle programmatic model creation for olmoe
+        tmp_dir = None
+        if model_arch == "olmoe":
+            tmp_dir = tempfile.mkdtemp()
+            model_id = create_tiny_random_olmoe_model(tmp_dir)
+        else:
+            model_id = MODEL_NAMES[model_arch]
+            
         if model_arch in REMOTE_CODE_MODELS:
             model_kwargs = {"trust_remote_code": True}
 
@@ -806,6 +845,10 @@ class OVModelForCausalLMIntegrationTest(unittest.TestCase):
                 torch.equal(ov_stateless_outputs, transformers_outputs),
                 f"generation config : {gen_config}, transformers output {transformers_outputs}, ov_model_stateless output {ov_stateless_outputs}",
             )
+        
+        # Cleanup temporary directory for programmatically created models
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_load_with_different_dtype(self):
         set_seed(SEED)
